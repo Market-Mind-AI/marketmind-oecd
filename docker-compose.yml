@@ -1,0 +1,51 @@
+# Nome do projeto Compose fixado no valor que já era usado implicitamente
+# (derivado do nome antigo do diretório) — evita que volumes/redes já criados
+# fiquem órfãos quando o diretório for renomeado para marketmind-oecd.
+name: oecd-organisationforeconomiccooperationanddevelopment
+
+services:
+  marketmind-oecd-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: marketmind-oecd-api
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - marketmind-network
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: marketmind-oecd-postgres
+    environment:
+      POSTGRES_DB: ${DATABASE_NAME:-marketmind_oecd}
+      POSTGRES_USER: ${DATABASE_USER:-marketmind}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-marketmind_password}
+    ports:
+      - "${DATABASE_PORT_HOST:-5433}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DATABASE_USER:-marketmind} -d ${DATABASE_NAME:-marketmind_oecd}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - marketmind-network
+    restart: unless-stopped
+
+# pgAdmin foi consolidado no marketmind-core (aponta para os bancos de todos
+# os serviços a partir de um único lugar). Ver marketmind-core/README.md.
+
+volumes:
+  postgres_data:
+
+networks:
+  marketmind-network:
+    driver: bridge
