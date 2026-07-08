@@ -62,6 +62,17 @@ _SERIES_KEY_LAYOUT: dict[str, dict[str, int]] = {
         "ADJUSTMENT": 6,
         "TRANSFORMATION": 7,
     },  # fmt: skip
+    # Confirmed 2026-07-08 against the real OECD API (agency OECD.ECO.MPD;
+    # the /data endpoint itself needs no agency prefix, only /dataflow
+    # structure discovery does) — "Analytical house prices indicators",
+    # MEASURE=RHP is "Real house price indices". Backs REAL_ESTATE_GROWTH_SCORE
+    # (marketmind-core Cap. 4 §4.4.3).
+    "DSD_AN_HOUSE_PRICES@DF_HOUSE_PRICES": {
+        "REF_AREA": 0,
+        "FREQ": 1,
+        "MEASURE": 2,
+        "UNIT_MEASURE": 3,
+    },  # fmt: skip
 }
 
 
