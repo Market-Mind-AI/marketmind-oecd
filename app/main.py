@@ -7,12 +7,23 @@ from app.api.routes.health import router as health_router
 from app.api.routes.oecd import router as oecd_router
 from app.core.config import settings
 from app.core.logging import logger
-from app.db.session import engine
+from app.db.session import async_session_factory, engine
+from app.services.oecd_service import OECDService
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info(f"Starting {settings.app_name} in {settings.app_env} mode")
+    # Idempotent (upserts by indicator_code) — safe to run on every startup,
+    # not just after a fresh volume. Never blocks startup: a transient
+    # failure here just means POST /indicators/catalog/seed still works
+    # manually, same as before this existed.
+    try:
+        async with async_session_factory() as session:
+            await OECDService(session).seed_catalog()
+        logger.info("Indicator catalog seeded on startup")
+    except Exception as e:
+        logger.error(f"Startup catalog seed failed (non-fatal): {e}")
     yield
     await engine.dispose()
     logger.info(f"Shutting down {settings.app_name}")

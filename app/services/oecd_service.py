@@ -16,6 +16,7 @@ from app.repositories.raw_api_response_repository import RawApiResponseRepositor
 from app.schemas.requests import (
     DataflowsRequest,
     DatastructureRequest,
+    IndicatorCatalogItem,
     IndicatorCatalogRequest,
     IndicatorCollectRequest,
     ObservationsRequest,
@@ -74,6 +75,54 @@ _SERIES_KEY_LAYOUT: dict[str, dict[str, int]] = {
         "UNIT_MEASURE": 3,
     },  # fmt: skip
 }
+
+# Mirrors what was live in the indicator catalog as of 2026-07-08 (until
+# then, entries only ever got there via manual POST /indicators/catalog
+# calls, with no code-level record of them — the RHP addition earlier that
+# same day would have been silently lost on the next fresh volume without
+# this). UNEMP/CCI keep dataflow_id=None exactly as they were live: neither
+# is wired to a real dataflow yet, so collect_indicators still rejects them
+# with "missing dataflow_id" until someone does that investigation, same
+# as before this list existed.
+SEED_INDICATORS: list[dict[str, Any]] = [
+    {
+        "indicator_code": "CPI",
+        "indicator_name": "Consumer Price Index",
+        "description": "Measures inflation via consumer prices.",
+        "category": "inflation",
+        "expected_unit": "percentage",
+        "marketmind_dimension": "macroeconomic_risk",
+        "dataflow_id": "DSD_PRICES@DF_PRICES_ALL",
+    },
+    {
+        "indicator_code": "UNEMP",
+        "indicator_name": "Unemployment Rate",
+        "description": "Harmonised unemployment rate.",
+        "category": "unemployment",
+        "expected_unit": "percentage",
+        "marketmind_dimension": "macroeconomic_risk",
+    },
+    {
+        "indicator_code": "CCI",
+        "indicator_name": "Consumer Confidence Indicator",
+        "description": "OECD composite consumer confidence indicator.",
+        "category": "consumer_confidence",
+        "expected_unit": "index",
+        "marketmind_dimension": "economic_readiness",
+    },
+    {
+        "indicator_code": "RHP",
+        "indicator_name": "Real House Price Index",
+        "description": (
+            "OECD Analytical house price indicators — real (inflation-adjusted) house price "
+            "index, quarterly, rebased to 100 per country per base year."
+        ),
+        "category": "real_estate",
+        "expected_unit": "index",
+        "marketmind_dimension": "economic_readiness",
+        "dataflow_id": "DSD_AN_HOUSE_PRICES@DF_HOUSE_PRICES",
+    },
+]
 
 
 def _build_series_key(dataflow_id: str, country: str, measure: str) -> str | None:
@@ -287,6 +336,12 @@ class OECDService:
         except Exception as e:
             await self._fail(run, endpoint, start, e)
             raise
+
+    async def seed_catalog(self) -> IndicatorCatalogResponse:
+        """Idempotent — upserts SEED_INDICATORS by indicator_code. Safe to
+        call on every startup, not just after a fresh volume."""
+        request = IndicatorCatalogRequest(indicators=[IndicatorCatalogItem(**item) for item in SEED_INDICATORS])
+        return await self.upsert_indicator_catalog(request)
 
     async def upsert_indicator_catalog(self, request: IndicatorCatalogRequest) -> IndicatorCatalogResponse:
         records = [ind.model_dump() for ind in request.indicators]

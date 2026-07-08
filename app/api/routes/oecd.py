@@ -134,6 +134,18 @@ async def list_indicators(
 
 
 @router.post(
+    "/indicators/catalog/seed",
+    response_model=IndicatorCatalogResponse,
+    summary="Seed indicator catalog",
+    description="Seeds the internal indicator catalog with the default MarketMind indicators (idempotent).",
+)
+async def seed_catalog(
+    service: OECDService = Depends(get_oecd_service),
+) -> IndicatorCatalogResponse:
+    return await service.seed_catalog()
+
+
+@router.post(
     "/indicators/collect",
     response_model=IndicatorCollectResponse,
     responses={
