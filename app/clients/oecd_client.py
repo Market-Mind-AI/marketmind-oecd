@@ -4,7 +4,13 @@ from typing import Any
 import httpx
 
 from app.core.config import settings
-from app.core.exceptions import OECDClientError, OECDEmptyResponseError, OECDRateLimitError, OECDTimeoutError
+from app.core.exceptions import (
+    OECDClientError,
+    OECDEmptyResponseError,
+    OECDRateLimitError,
+    OECDTimeoutError,
+    OECDTransientError,
+)
 from app.core.logging import logger
 
 ACCEPT_STRUCTURE = "application/vnd.sdmx.structure+json;charset=utf-8;version=1.0"
@@ -74,6 +80,21 @@ class OECDClient:
 
                 if response.status_code == 404:
                     raise OECDEmptyResponseError(f"No data found at {url}")
+
+                # Transient upstream failure (5xx): retry with backoff instead
+                # of failing the indicator on a single blip. Must be checked
+                # before the generic 4xx branch below.
+                if response.status_code >= 500:
+                    last_error = OECDTransientError(
+                        f"OECD server error: status={response.status_code} url={url}"
+                    )
+                    logger.warning(
+                        f"Server error {response.status_code} on attempt {attempt}/{self._retries} for {url}"
+                    )
+                    if attempt < self._retries:
+                        await asyncio.sleep(self._backoff * attempt)
+                        continue
+                    raise last_error
 
                 if response.status_code >= 400:
                     raise OECDClientError(

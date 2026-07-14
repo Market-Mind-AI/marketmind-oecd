@@ -16,7 +16,9 @@ class Settings(BaseSettings):
     oecd_base_url: str = "https://sdmx.oecd.org/public/rest/v1"
     default_format: str = "sdmx-json"
     default_timeout: int = 30
-    default_retries: int = 3
+    # Raised 3->5: gives transient 5xx/timeout failures more chances to recover
+    # before an indicator is permanently dropped (mirrors the WorldBank sibling).
+    default_retries: int = 5
     default_backoff: int = 2
 
     log_level: str = "INFO"
