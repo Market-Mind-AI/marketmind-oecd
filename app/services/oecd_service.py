@@ -22,6 +22,7 @@ from app.schemas.requests import (
     IndicatorCatalogRequest,
     IndicatorCollectRequest,
     ObservationsRequest,
+    RefreshStaleRequest,
 )
 from app.schemas.responses import (
     CodeItem,
@@ -42,6 +43,9 @@ from app.schemas.responses import (
     ObservationItem,
     ObservationsData,
     ObservationsResponse,
+    RefreshedCountry,
+    RefreshStaleData,
+    RefreshStaleResponse,
     SeriesData,
     SeriesPoint,
     SeriesResponse,
@@ -727,5 +731,78 @@ class OECDService:
                 indicator_code=indicator_code.strip() if indicator_code else None,
                 frequency=frequency.strip().upper() if frequency else None,
                 points=[SeriesPoint(time_period=period, value=value) for period, value in rows],
+            )
+        )
+
+    async def refresh_stale(self, request: RefreshStaleRequest) -> RefreshStaleResponse:
+        """Collect again whatever has not been looked at in a while.
+
+        This is the half of freshness that nobody has to ask for. The other half
+        is the on-demand collection: something decides a country is needed now
+        and asks. Between the two, data this service already holds stays current
+        without anyone tracking it from outside -- and a second record of what
+        was collected, kept elsewhere, drifts from the tables while the tables
+        are the ones that can be wrong in silence.
+
+        Bounded on purpose: a first run against a long-idle database finds every
+        country stale at once, and the upstream API has its own patience.
+
+        Each country is REPLAYED from its last successful request with the
+        window moved to now, so whatever a caller once set up keeps working
+        without this service learning which indicators that country uses.
+        """
+        freshness = await self.get_freshness(stale_after_days=request.stale_after_days, only_stale=True)
+
+        stale_countries: list[str] = []
+        for item in freshness.data.items:
+            if item.country not in stale_countries:
+                stale_countries.append(item.country)
+
+        payloads = await self._ingestion_repo.last_successful_payload_by_country()
+        end_year = utc_now().year
+        start_year = end_year - request.years_back + 1
+
+        outcomes: list[RefreshedCountry] = []
+        refreshed = failed = skipped = 0
+
+        for country in stale_countries[: request.limit]:
+            payload = payloads.get(country)
+            indicator_codes = (payload or {}).get("indicator_codes")
+            if payload is None or not indicator_codes:
+                skipped += 1
+                outcomes.append(
+                    RefreshedCountry(
+                        country=country,
+                        outcome="skipped",
+                        detail="no successful collection to replay; collect it once on demand first",
+                    )
+                )
+                continue
+
+            try:
+                await self.collect_indicators(
+                    IndicatorCollectRequest(
+                        country=payload.get("country", country),
+                        start_period=str(start_year),
+                        end_period=str(end_year),
+                        indicator_codes=indicator_codes,
+                    )
+                )
+                refreshed += 1
+                outcomes.append(RefreshedCountry(country=country, outcome="refreshed"))
+            except Exception as exc:  # noqa: BLE001 - one country failing must not end the pass
+                failed += 1
+                logger.warning(f"Scheduled refresh failed for country={country}: {exc}")
+                outcomes.append(RefreshedCountry(country=country, outcome="failed", detail=str(exc)))
+
+        return RefreshStaleResponse(
+            data=RefreshStaleData(
+                stale_after_days=request.stale_after_days,
+                stale_countries=len(stale_countries),
+                attempted=len(outcomes),
+                refreshed=refreshed,
+                failed=failed,
+                skipped=skipped,
+                countries=outcomes,
             )
         )

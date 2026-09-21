@@ -299,3 +299,23 @@ class SeriesData(BaseModel):
 
 class SeriesResponse(BaseModel):
     data: SeriesData
+
+
+class RefreshedCountry(BaseModel):
+    country: str
+    outcome: str
+    detail: str | None = None
+
+
+class RefreshStaleData(BaseModel):
+    stale_after_days: int
+    stale_countries: int
+    attempted: int
+    refreshed: int
+    failed: int
+    skipped: int
+    countries: list[RefreshedCountry]
+
+
+class RefreshStaleResponse(BaseModel):
+    data: RefreshStaleData

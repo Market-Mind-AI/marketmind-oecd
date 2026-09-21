@@ -45,3 +45,26 @@ class IngestionRunRepository:
     async def get_by_id(self, run_id: uuid.UUID) -> IngestionRun | None:
         result = await self._session.execute(select(IngestionRun).where(IngestionRun.id == run_id))
         return result.scalar_one_or_none()
+
+    async def last_successful_payload_by_country(self) -> dict[str, dict[str, Any]]:
+        """The most recent successful collection request, per country.
+
+        A refresh replays what was asked before rather than composing a new
+        request from scratch. The service already recorded exactly what a
+        working collection looked like for that country, and replaying it needs
+        no knowledge the service would otherwise have to keep -- which
+        indicators that country was set up with, which dataflow they came from.
+
+        Only successful runs: replaying a request that failed would repeat the
+        failure on a schedule.
+        """
+        country = IngestionRun.request_payload["country"].astext
+        stmt = (
+            select(country, IngestionRun.request_payload)
+            .where(IngestionRun.status == IngestionStatus.SUCCESS)
+            .where(country.is_not(None))
+            .distinct(country)
+            .order_by(country, IngestionRun.started_at.desc())
+        )
+        result = await self._session.execute(stmt)
+        return {row[0]: row[1] for row in result.all()}

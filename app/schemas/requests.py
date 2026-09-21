@@ -132,3 +132,18 @@ class IndicatorCollectRequest(BaseModel):
             ]
         }
     }
+
+
+class RefreshStaleRequest(BaseModel):
+    """Body of the daily maintenance pass. Every field has a default so the
+    scheduled call can send `{}`."""
+
+    stale_after_days: int = Field(
+        default=30, ge=1, le=3650, description="A country whose last check is older than this gets collected again."
+    )
+    limit: int = Field(
+        default=10, ge=1, le=200, description="Most countries to refresh in one pass."
+    )
+    years_back: int = Field(
+        default=5, ge=1, le=70, description="How far back the replayed window reaches, counting from this year."
+    )

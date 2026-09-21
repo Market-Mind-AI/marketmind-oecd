@@ -17,6 +17,7 @@ from app.schemas.requests import (
     IndicatorCatalogRequest,
     IndicatorCollectRequest,
     ObservationsRequest,
+    RefreshStaleRequest,
 )
 from app.schemas.responses import (
     DataflowsResponse,
@@ -28,6 +29,7 @@ from app.schemas.responses import (
     IngestionRunResponse,
     ObservationsResponse,
     OECDRequestDetailResponse,
+    RefreshStaleResponse,
     SeriesResponse,
 )
 from app.services.oecd_service import OECDService
@@ -121,6 +123,29 @@ async def upsert_indicators(
     service: OECDService = Depends(get_oecd_service),
 ) -> IndicatorCatalogResponse:
     return await service.upsert_indicator_catalog(request)
+
+
+@router.post(
+    "/maintenance/refresh-stale",
+    response_model=RefreshStaleResponse,
+    summary="Collect again whatever has not been looked at in a while",
+    description=(
+        "The scheduled half of keeping data current. The other half is the "
+        "on-demand collection: something decides a country is needed now and "
+        "asks for it.\n\n"
+        "Each stale country is replayed from its last SUCCESSFUL collection "
+        "request, with the period window moved to now, so whatever a caller "
+        "once set up keeps working without this service learning about it.\n\n"
+        "A country never collected is skipped, not invented: it has no request "
+        "to replay, and it arrives through the on-demand path the first time.\n\n"
+        "Bounded by `limit`. One country failing does not end the pass."
+    ),
+)
+async def refresh_stale(
+    request: RefreshStaleRequest | None = None,
+    service: OECDService = Depends(get_oecd_service),
+) -> RefreshStaleResponse:
+    return await service.refresh_stale(request or RefreshStaleRequest())
 
 
 @router.get(
