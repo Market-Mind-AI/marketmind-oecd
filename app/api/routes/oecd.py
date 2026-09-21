@@ -28,6 +28,7 @@ from app.schemas.responses import (
     IngestionRunResponse,
     ObservationsResponse,
     OECDRequestDetailResponse,
+    SeriesResponse,
 )
 from app.services.oecd_service import OECDService
 
@@ -120,6 +121,39 @@ async def upsert_indicators(
     service: OECDService = Depends(get_oecd_service),
 ) -> IndicatorCatalogResponse:
     return await service.upsert_indicator_catalog(request)
+
+
+@router.get(
+    "/observations/series",
+    response_model=SeriesResponse,
+    summary="Read one series for one country",
+    description=(
+        "Returns the stored values for a country and measure, one value per "
+        "time period, newest first, nulls dropped.\n\n"
+        "Deduplicated per period, and that matters: re-collection inserts "
+        "without replacing, so a period is held many times over. Reading the "
+        "raw table with a plain limit returns many copies of the same period, "
+        "which makes any window counted in periods collapse -- it produced a "
+        "growth rate of exactly zero for every country once, and looked "
+        "entirely plausible.\n\n"
+        "Pass `frequency` whenever a measure is published at more than one "
+        "frequency (quarterly and annually share a code), or the window mixes "
+        "them.\n\n"
+        "Rows come back, never a growth rate or an average: that arithmetic is "
+        "versioned method and belongs to whoever owns the method."
+    ),
+)
+async def get_series(
+    country: str = Query(..., description="Country code as stored, e.g. ESP"),
+    measure: str | None = Query(None, description="SDMX measure, e.g. RHP"),
+    indicator_code: str | None = Query(None, description="Internal indicator code, if you filter by that instead"),
+    frequency: str | None = Query(None, description="SDMX frequency, e.g. Q or A"),
+    limit: int | None = Query(None, ge=1, le=1000, description="Most recent N periods only."),
+    service: OECDService = Depends(get_oecd_service),
+) -> SeriesResponse:
+    return await service.get_series(
+        country=country, measure=measure, indicator_code=indicator_code, frequency=frequency, limit=limit
+    )
 
 
 @router.get(

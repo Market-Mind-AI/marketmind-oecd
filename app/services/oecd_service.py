@@ -42,6 +42,9 @@ from app.schemas.responses import (
     ObservationItem,
     ObservationsData,
     ObservationsResponse,
+    SeriesData,
+    SeriesPoint,
+    SeriesResponse,
 )
 from app.utils.normalization import normalize_observations
 from app.utils.sdmx import extract_dataflows, extract_dimensions, extract_observations
@@ -690,3 +693,39 @@ class OECDService:
             )
 
         return FreshnessResponse(data=FreshnessData(as_of=now, stale_after_days=stale_after_days, items=items))
+
+    async def get_series(
+        self,
+        *,
+        country: str,
+        measure: str | None = None,
+        indicator_code: str | None = None,
+        frequency: str | None = None,
+        limit: int | None = None,
+    ) -> SeriesResponse:
+        """One series, one value per period, newest first.
+
+        This is how a caller reads what was collected without opening this
+        service's database. Reading another service's tables directly couples
+        the reader to a schema it does not own, and a column rename here then
+        breaks a calculation there, silently.
+
+        Values come back as rows, never as a growth rate or an average. That
+        arithmetic is versioned method and belongs to whoever owns the method.
+        """
+        rows = await self._observation_repo.series(
+            country=country.strip().upper(),
+            measure=measure.strip() if measure else None,
+            indicator_code=indicator_code.strip() if indicator_code else None,
+            frequency=frequency.strip().upper() if frequency else None,
+            limit=limit,
+        )
+        return SeriesResponse(
+            data=SeriesData(
+                country=country.strip().upper(),
+                measure=measure.strip() if measure else None,
+                indicator_code=indicator_code.strip() if indicator_code else None,
+                frequency=frequency.strip().upper() if frequency else None,
+                points=[SeriesPoint(time_period=period, value=value) for period, value in rows],
+            )
+        )

@@ -282,3 +282,20 @@ class FreshnessData(BaseModel):
 
 class FreshnessResponse(BaseModel):
     data: FreshnessData
+
+
+class SeriesPoint(BaseModel):
+    time_period: str
+    value: Decimal
+
+
+class SeriesData(BaseModel):
+    country: str
+    measure: str | None = None
+    indicator_code: str | None = None
+    frequency: str | None = None
+    points: list[SeriesPoint]
+
+
+class SeriesResponse(BaseModel):
+    data: SeriesData
