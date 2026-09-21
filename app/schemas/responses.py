@@ -258,3 +258,27 @@ class IngestionRunResponse(BaseModel):
 class ErrorResponse(BaseModel):
     detail: str
     ingestion_run_id: UUID | None = None
+
+
+class FreshnessItem(BaseModel):
+    country: str
+    indicator_code: str
+    # When we last ASKED the OECD, not how recent the data is. These are
+    # different questions and only the first one says whether to fetch again: a
+    # rule written against the data's own period would treat every series that
+    # publishes slowly as permanently stale and re-fetch it every day.
+    last_checked_at: datetime | None = None
+    last_observation_at: datetime | None = None
+    latest_period: str | None = None
+    observation_count: int = 0
+    stale: bool
+
+
+class FreshnessData(BaseModel):
+    as_of: datetime
+    stale_after_days: int
+    items: list[FreshnessItem]
+
+
+class FreshnessResponse(BaseModel):
+    data: FreshnessData

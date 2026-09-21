@@ -1,3 +1,4 @@
+from datetime import timedelta
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -6,6 +7,7 @@ from app.clients.oecd_client import OECDClient
 from app.core.exceptions import IndicatorNotConfiguredError
 from app.core.logging import logger
 from app.domain.enums import IngestionStatus, OECDEndpoint
+from app.repositories.freshness_repository import FreshnessRepository
 from app.repositories.ingestion_run_repository import IngestionRunRepository
 from app.repositories.oecd_dataflow_repository import OECDDataflowRepository
 from app.repositories.oecd_datastructure_repository import OECDDatastructureRepository
@@ -29,6 +31,9 @@ from app.schemas.responses import (
     DatastructureData,
     DatastructureResponse,
     DimensionItem,
+    FreshnessData,
+    FreshnessItem,
+    FreshnessResponse,
     IndicatorCatalogItemResponse,
     IndicatorCatalogResponse,
     IndicatorCollectData,
@@ -150,6 +155,7 @@ class OECDService:
         self._datastructure_repo = OECDDatastructureRepository(session)
         self._observation_repo = OECDObservationRepository(session)
         self._indicator_repo = OECDIndicatorRepository(session)
+        self._freshness_repo = FreshnessRepository(session)
 
     async def collect_dataflows(self, request: DataflowsRequest) -> DataflowsResponse:
         endpoint = OECDEndpoint.DATAFLOWS
@@ -629,3 +635,58 @@ class OECDService:
             f"endpoint={endpoint} | ingestion_run_id={run_id} | "
             f"execution_time_ms={exec_time} | status=failed | error={error}"
         )
+
+    async def get_freshness(
+        self,
+        *,
+        countries: list[str] | None = None,
+        indicators: list[str] | None = None,
+        stale_after_days: int = 30,
+        only_stale: bool = False,
+    ) -> FreshnessResponse:
+        """What this service holds and when it last looked, per country and indicator.
+
+        This is what lets a caller decide whether to ask for a collection,
+        without keeping its own record of what was fetched when -- the
+        bookkeeping that used to live outside this service and drift away from
+        what the tables actually held.
+
+        Naming BOTH a country and an indicator asks a closed question, so it
+        gets a closed answer: every requested pair comes back, including pairs
+        never fetched, marked stale with last_checked_at null. An empty list
+        would be indistinguishable from "everything is fresh".
+        """
+        countries = [c.strip().upper() for c in countries if c.strip()] if countries else None
+        indicators = [i.strip() for i in indicators if i.strip()] if indicators else None
+
+        checks = await self._freshness_repo.last_checks(countries=countries, indicators=indicators)
+        observed = await self._freshness_repo.observation_facts(countries=countries, indicators=indicators)
+
+        if countries and indicators:
+            pairs = [(country, indicator) for country in countries for indicator in indicators]
+        else:
+            pairs = sorted(set(checks) | set(observed))
+
+        now = utc_now()
+        cutoff = now - timedelta(days=stale_after_days)
+
+        items: list[FreshnessItem] = []
+        for country, indicator in pairs:
+            last_checked_at = checks.get((country, indicator))
+            facts = observed.get((country, indicator))
+            stale = last_checked_at is None or last_checked_at < cutoff
+            if only_stale and not stale:
+                continue
+            items.append(
+                FreshnessItem(
+                    country=country,
+                    indicator_code=indicator,
+                    last_checked_at=last_checked_at,
+                    last_observation_at=facts.last_observation_at if facts else None,
+                    latest_period=facts.latest_period if facts else None,
+                    observation_count=facts.observation_count if facts else 0,
+                    stale=stale,
+                )
+            )
+
+        return FreshnessResponse(data=FreshnessData(as_of=now, stale_after_days=stale_after_days, items=items))

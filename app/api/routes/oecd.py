@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Query, HTTPException
 
 from app.api.dependencies import get_oecd_service
 from app.core.exceptions import (
@@ -22,6 +22,7 @@ from app.schemas.responses import (
     DataflowsResponse,
     DatastructureResponse,
     ErrorResponse,
+    FreshnessResponse,
     IndicatorCatalogResponse,
     IndicatorCollectResponse,
     IngestionRunResponse,
@@ -119,6 +120,39 @@ async def upsert_indicators(
     service: OECDService = Depends(get_oecd_service),
 ) -> IndicatorCatalogResponse:
     return await service.upsert_indicator_catalog(request)
+
+
+@router.get(
+    "/freshness",
+    response_model=FreshnessResponse,
+    summary="What this service holds, and when it last looked",
+    description=(
+        "Reports, per country and indicator, when this service last ASKED the "
+        "OECD -- not how recent the returned data is. The two are different, "
+        "and a staleness rule written against the data's own period would treat "
+        "every slowly-published series as permanently stale and re-fetch it "
+        "every day.\n\n"
+        "A pair that was checked and came back empty still reports a "
+        "last_checked_at, so a country the source genuinely has no data for is "
+        "not mistaken for one that was never tried.\n\n"
+        "Naming both country and indicator asks a closed question and gets a "
+        "closed answer: every requested pair is returned, including pairs never "
+        "fetched (last_checked_at null, stale true)."
+    ),
+)
+async def get_freshness(
+    country: list[str] | None = Query(None, description="Country codes. Repeat the parameter for several."),
+    indicator: list[str] | None = Query(None, description="Indicator codes. Repeat for several."),
+    stale_after_days: int = Query(30, ge=1, le=3650, description="A check older than this counts as stale."),
+    only_stale: bool = Query(False, description="Return only the pairs that need collecting."),
+    service: OECDService = Depends(get_oecd_service),
+) -> FreshnessResponse:
+    return await service.get_freshness(
+        countries=country,
+        indicators=indicator,
+        stale_after_days=stale_after_days,
+        only_stale=only_stale,
+    )
 
 
 @router.get(
