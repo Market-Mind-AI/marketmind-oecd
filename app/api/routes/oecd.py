@@ -37,6 +37,28 @@ from app.services.oecd_service import OECDService
 router = APIRouter()
 
 
+def _refuse_if_incomplete(resposta, pedido) -> None:
+    """Uma passagem que deixou país para trás responde 503, quando pedido.
+
+    O CronJob chama isto com `curl --fail`, então um 503 sai diferente de zero:
+    o Kubernetes retenta dentro do backoffLimit e, se não resolver, o Job fica
+    `Failed` em vez de marcar sucesso. Sem isso, `failed` era apenas um campo
+    dentro de uma resposta 200 — uma noite em que TODOS os países falharam
+    terminava com o CronJob anotando lastSuccessfulTime.
+
+    Só quando pedido: uma chamada manual quer o relatório parcial, não um erro.
+    """
+    if not getattr(pedido, "fail_if_incomplete", False):
+        return
+    dados = getattr(resposta, "data", resposta)
+    falharam = getattr(dados, "failed", 0) or 0
+    if falharam:
+        raise HTTPException(
+            status_code=503,
+            detail=f"{falharam} country(ies) could not be refreshed; the pass is incomplete.",
+        )
+
+
 @router.post(
     "/dataflows",
     response_model=DataflowsResponse,
@@ -145,7 +167,10 @@ async def refresh_stale(
     request: RefreshStaleRequest | None = None,
     service: OECDService = Depends(get_oecd_service),
 ) -> RefreshStaleResponse:
-    return await service.refresh_stale(request or RefreshStaleRequest())
+    pedido = request or RefreshStaleRequest()
+    resposta = await service.refresh_stale(pedido)
+    _refuse_if_incomplete(resposta, pedido)
+    return resposta
 
 
 @router.get(

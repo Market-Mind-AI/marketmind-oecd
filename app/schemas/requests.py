@@ -141,8 +141,19 @@ class RefreshStaleRequest(BaseModel):
     stale_after_days: int = Field(
         default=30, ge=1, le=3650, description="A country whose last check is older than this gets collected again."
     )
-    limit: int = Field(
-        default=10, ge=1, le=200, description="Most countries to refresh in one pass."
+    # Sem teto por padrão: None quer dizer "todo país vencido nesta passagem".
+    # Um teto de 10 contra 24 países não conseguia sequer limpar o atraso de uma
+    # noite — sobravam 14, que na noite seguinte disputavam as mesmas 10 vagas
+    # com os que tinham acabado de vencer. O teto continua disponível para quem
+    # quiser limitar uma partida a frio; ele só deixou de ser o padrão.
+    limit: int | None = Field(default=None, ge=1, le=200, description="Most countries to refresh in one pass.")
+    # Quando ligado, uma passagem que deixou país para trás responde 503 em vez
+    # de 200. É o que transforma o CronJob em rede de segurança: `curl --fail`
+    # sai diferente de zero, o Kubernetes retenta, e o que não se resolve fica
+    # como Job `Failed` em vez de um sucesso que não coletou nada.
+    fail_if_incomplete: bool = Field(
+        default=False,
+        description="Answer 503 when any country failed, so a caller that retries on error can retry.",
     )
     years_back: int = Field(
         default=5, ge=1, le=70, description="How far back the replayed window reaches, counting from this year."

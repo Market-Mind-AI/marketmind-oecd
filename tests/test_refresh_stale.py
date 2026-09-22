@@ -130,3 +130,43 @@ async def test_one_country_failing_does_not_end_the_pass(mock_session: AsyncMock
 
     assert response.data.failed == 1
     assert response.data.refreshed == 1
+
+
+def test_no_limit_means_every_stale_country(mock_session) -> None:
+    """Um teto de 10 contra 24 países não limpava nem o atraso de uma noite:
+    sobravam 14, que na noite seguinte disputavam as mesmas 10 vagas com os que
+    tinham acabado de vencer. O padrão agora é sem teto."""
+    pedido = RefreshStaleRequest()
+
+    assert pedido.limit is None
+
+
+def test_a_pass_that_left_countries_behind_can_refuse() -> None:
+    """O CronJob chama com `curl --fail`, então um 503 sai diferente de zero: o
+    Kubernetes retenta e o que não se resolve fica como Job `Failed`. Sem isso,
+    `failed` era só um campo dentro de um 200 — uma noite em que TODOS os países
+    falharam terminava com o CronJob anotando lastSuccessfulTime."""
+    from types import SimpleNamespace
+
+    import pytest
+    from fastapi import HTTPException
+
+    from app.api.routes.oecd import _refuse_if_incomplete
+
+    resposta = SimpleNamespace(data=SimpleNamespace(failed=3))
+
+    with pytest.raises(HTTPException) as erro:
+        _refuse_if_incomplete(resposta, RefreshStaleRequest(fail_if_incomplete=True))
+    assert erro.value.status_code == 503
+
+    # Sem pedir, a chamada manual continua recebendo o relatório parcial.
+    _refuse_if_incomplete(resposta, RefreshStaleRequest())
+
+
+def test_a_complete_pass_never_refuses() -> None:
+    from types import SimpleNamespace
+
+    from app.api.routes.oecd import _refuse_if_incomplete
+
+    completa = SimpleNamespace(data=SimpleNamespace(failed=0))
+    _refuse_if_incomplete(completa, RefreshStaleRequest(fail_if_incomplete=True))
