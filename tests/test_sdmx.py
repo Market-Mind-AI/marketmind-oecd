@@ -99,3 +99,59 @@ class TestExtractObservations:
         }
         result = extract_observations(empty_response, country="ES", indicator_code="CCI")
         assert result == []
+
+
+def test_a_codelist_referenced_by_urn_is_still_found() -> None:
+    """O SDMX da OCDE responde a referência como
+    `urn:sdmx:org.sdmx.infomodel.codelist.Codelist=OECD:CL_AREA(1.0)`, e usar a
+    URN inteira como id nunca casa com a codelist, que se chama `CL_AREA`.
+
+    A falha era silenciosa e específica: a estrutura era buscada e gravada, as
+    dimensões apareciam, e TODO código ficava nulo — inclusive a lista de
+    países da dimensão REF_AREA, que é a única resposta à pergunta "esta fonte
+    cobre este país?".
+    """
+    from app.utils.sdmx import extract_dimensions
+
+    resposta = {
+        "data": {
+            "dataStructures": [
+                {
+                    "id": "DSD_AN_HOUSE_PRICES",
+                    "dataStructureComponents": {
+                        "dimensionList": {
+                            "dimensions": [
+                                {
+                                    "id": "REF_AREA",
+                                    "position": 0,
+                                    "localRepresentation": {
+                                        "enumeration": (
+                                            "urn:sdmx:org.sdmx.infomodel.codelist."
+                                            "Codelist=OECD:CL_AREA(1.0)"
+                                        )
+                                    },
+                                }
+                            ]
+                        }
+                    },
+                }
+            ],
+            "codelists": [
+                {
+                    "id": "CL_AREA",
+                    "codes": [{"id": "BRA", "name": "Brazil"}, {"id": "USA", "name": "United States"}],
+                }
+            ],
+        }
+    }
+
+    dims = extract_dimensions(resposta, dataflow_id="DF_HOUSE_PRICES")
+
+    assert [d["code_id"] for d in dims] == ["BRA", "USA"]
+
+
+def test_a_codelist_referenced_by_plain_id_still_works() -> None:
+    """A outra forma continua valendo — nem toda agência responde com URN."""
+    from app.utils.sdmx import _codelist_id_de
+
+    assert _codelist_id_de("CL_AREA") == "CL_AREA"

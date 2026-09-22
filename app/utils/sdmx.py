@@ -296,13 +296,31 @@ def _extract_localized_name(name_field: Any) -> str | None:
     return str(name_field)
 
 
+def _codelist_id_de(enumeration: str) -> str:
+    """O id da codelist, venha ele solto ou dentro de uma URN.
+
+    O SDMX da OCDE responde a referência como
+    `urn:sdmx:org.sdmx.infomodel.codelist.Codelist=OECD:CL_AREA(1.0)`, e usar
+    isso inteiro como id nunca casa com a codelist, que se chama `CL_AREA`. O
+    efeito era silencioso e específico: a estrutura era buscada e gravada, as
+    dimensões apareciam, e TODO código ficava nulo — inclusive a lista de países
+    que a dimensão REF_AREA carrega, que é a única resposta à pergunta "esta
+    fonte cobre este país?".
+    """
+    if "=" not in enumeration:
+        return enumeration
+    depois = enumeration.rsplit("=", 1)[1]
+    sem_agencia = depois.split(":")[-1]
+    return sem_agencia.split("(")[0]
+
+
 def _extract_codelist_codes(dimension: dict, response: dict) -> list[dict[str, str | None]]:
     local_repr = dimension.get("localRepresentation", {})
     enum_ref = local_repr.get("enumeration")
     if not enum_ref:
         return []
 
-    codelist_id = enum_ref if isinstance(enum_ref, str) else enum_ref.get("id")
+    codelist_id = _codelist_id_de(enum_ref) if isinstance(enum_ref, str) else enum_ref.get("id")
     if not codelist_id:
         return []
 
