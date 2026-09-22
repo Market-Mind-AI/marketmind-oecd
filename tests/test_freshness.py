@@ -103,3 +103,38 @@ async def test_the_threshold_is_configurable(mock_session: AsyncMock) -> None:
 
     assert fresh.data.items[0].stale is False
     assert stale.data.items[0].stale is True
+
+
+async def test_a_timestamp_that_comes_back_with_a_timezone_is_still_comparable(
+    mock_session: AsyncMock,
+) -> None:
+    """The real failure, and every test here missed it by building naive
+    datetimes by hand.
+
+    `oecd_requests.created_at` is `timestamp with time zone`, so the database
+    hands back an AWARE datetime, while `utc_now()` is naive. Comparing them is
+    `TypeError: can't compare offset-naive and offset-aware datetimes`, and it
+    took the whole endpoint down with a 500 — which took down this service's
+    daily CronJob and the scoring service's macro prewarm with it, both showing
+    up only as a pod in `Error`.
+    """
+    from datetime import UTC
+
+    aware_yesterday = (utc_now() - timedelta(days=1)).replace(tzinfo=UTC)
+    service = _service(mock_session, checks={("ESP", _CPI): aware_yesterday})
+
+    response = await service.get_freshness(countries=["ESP"], indicators=[_CPI])
+
+    assert [(i.country, i.stale) for i in response.data.items] == [("ESP", False)]
+
+
+async def test_an_old_check_with_a_timezone_is_stale(mock_session: AsyncMock) -> None:
+    """The other direction: normalising must not make everything look fresh."""
+    from datetime import UTC
+
+    aware_old = (utc_now() - timedelta(days=31)).replace(tzinfo=UTC)
+    service = _service(mock_session, checks={("ESP", _CPI): aware_old})
+
+    response = await service.get_freshness(countries=["ESP"], indicators=[_CPI])
+
+    assert [(i.country, i.stale) for i in response.data.items] == [("ESP", True)]

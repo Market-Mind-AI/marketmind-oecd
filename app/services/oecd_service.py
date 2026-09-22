@@ -52,7 +52,7 @@ from app.schemas.responses import (
 )
 from app.utils.normalization import normalize_observations
 from app.utils.sdmx import extract_dataflows, extract_dimensions, extract_observations
-from app.utils.time import elapsed_ms, utc_now
+from app.utils.time import as_naive_utc, elapsed_ms, utc_now
 
 # Known SDMX series-dimension order per dataflow (REF_AREA/MEASURE positions +
 # total dimension count), used to build a scoped query_key for
@@ -679,7 +679,10 @@ class OECDService:
 
         items: list[FreshnessItem] = []
         for country, indicator in pairs:
-            last_checked_at = checks.get((country, indicator))
+            # Normalizado antes de comparar: `utc_now()` é sem fuso e esta
+            # coluna é `timestamp with time zone`, então a comparação crua é
+            # TypeError — ver as_naive_utc.
+            last_checked_at = as_naive_utc(checks.get((country, indicator)))
             facts = observed.get((country, indicator))
             stale = last_checked_at is None or last_checked_at < cutoff
             if only_stale and not stale:
