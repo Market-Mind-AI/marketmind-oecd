@@ -109,8 +109,8 @@ docker compose exec marketmind-oecd-api alembic upgrade head
 | ReDoc | http://localhost:8000/redoc |
 | OpenAPI JSON | http://localhost:8000/openapi.json |
 
-pgAdmin was consolidated into `marketmind-core` (single instance pointing at
-all 5 services' databases). See `marketmind-core/README.md`.
+pgAdmin was consolidated into `marketmind-scoring` (single instance pointing at
+all 5 services' databases). See `marketmind-scoring/README.md`.
 
 ## Endpoints
 
