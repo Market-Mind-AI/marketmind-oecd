@@ -27,3 +27,8 @@ docs/
 tests/
 *.md
 !README.md
+
+# Local API dumps
+raw_api_responses*.json
+raw_responses/
+.DS_Store

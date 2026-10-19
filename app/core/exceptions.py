@@ -28,9 +28,5 @@ class OECDParsingError(Exception):
     pass
 
 
-class IngestionError(Exception):
-    pass
-
-
 class IndicatorNotConfiguredError(Exception):
     pass

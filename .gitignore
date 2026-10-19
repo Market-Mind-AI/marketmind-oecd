@@ -25,3 +25,8 @@ env/
 *.swo
 
 poetry.lock
+
+# Local API dumps — never versioned
+raw_api_responses*.json
+raw_responses/
+.DS_Store

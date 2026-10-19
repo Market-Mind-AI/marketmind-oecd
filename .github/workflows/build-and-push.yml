@@ -13,7 +13,7 @@ name: Build and Push
 #      Contents: write on equifina/beprofit-infra-manifests.
 #
 # Modelled on beprofit-quota-management's workflow so both orgs deploy the same
-# way. Full runbook: marketmind-core/docs/marketmind-deploy-azure-beprofit.md
+# way. Full runbook: marketmind-scoring/docs/marketmind-deploy-azure-beprofit.md
 
 on:
   push:

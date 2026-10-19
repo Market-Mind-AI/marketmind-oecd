@@ -50,10 +50,3 @@ def normalize_observations(raw_observations: list[dict[str, Any]]) -> list[dict[
             }
         )
     return normalized
-
-
-def clean_empty_strings(value: str | None) -> str | None:
-    if value is None:
-        return None
-    stripped = value.strip()
-    return stripped if stripped else None

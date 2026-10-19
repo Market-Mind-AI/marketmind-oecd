@@ -59,7 +59,7 @@ from app.utils.time import as_naive_utc, elapsed_ms, utc_now
 # collect_indicators instead of always fetching the entire dataflow (every
 # country, every series) and filtering client-side. Confirmed against the
 # real OECD API (GET /dataflow/{agency}/{dataflow_id}), not guessed — see
-# marketmind-core's investigation (2026-07-03) that found collect_indicators
+# marketmind-scoring's investigation (2026-07-03) that found collect_indicators
 # always requesting key="all", which for DSD_PRICES@DF_PRICES_ALL fetches a
 # dataset large enough to routinely time out or take over an hour for a
 # single country. Extend this map when adding a new dataflow to the catalog;
@@ -79,7 +79,7 @@ _SERIES_KEY_LAYOUT: dict[str, dict[str, int]] = {
     # the /data endpoint itself needs no agency prefix, only /dataflow
     # structure discovery does) — "Analytical house prices indicators",
     # MEASURE=RHP is "Real house price indices". Backs REAL_ESTATE_GROWTH_SCORE
-    # (marketmind-core Cap. 4 §4.4.3).
+    # (marketmind-scoring Cap. 4 §4.4.3).
     "DSD_AN_HOUSE_PRICES@DF_HOUSE_PRICES": {
         "REF_AREA": 0,
         "FREQ": 1,
@@ -430,7 +430,7 @@ class OECDService:
             exec_time = elapsed_ms(start)
             await self._ingestion_repo.mark_failed(
                 run,
-                f"Indicators missing dataflow_id: {', '.join(not_configured)}. " "Update the catalog with dataflow_id.",
+                f"Indicators missing dataflow_id: {', '.join(not_configured)}. Update the catalog with dataflow_id.",
                 exec_time,
             )
             await self._session.commit()

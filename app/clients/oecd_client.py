@@ -57,12 +57,7 @@ class OECDClient:
         data = await self._request(url, params, accept=ACCEPT_DATA)
         return data, url
 
-    async def get_raw(self, url: str, params: dict[str, str] | None = None) -> dict[str, Any]:
-        return await self._request(url, params or {})
-
-    async def _request(
-        self, url: str, params: dict[str, str], accept: str = ACCEPT_DATA
-    ) -> dict[str, Any]:
+    async def _request(self, url: str, params: dict[str, str], accept: str = ACCEPT_DATA) -> dict[str, Any]:
         headers = {"Accept": accept, "User-Agent": self._user_agent}
         last_error: Exception | None = None
         for attempt in range(1, self._retries + 1):
@@ -85,9 +80,7 @@ class OECDClient:
                 # of failing the indicator on a single blip. Must be checked
                 # before the generic 4xx branch below.
                 if response.status_code >= 500:
-                    last_error = OECDTransientError(
-                        f"OECD server error: status={response.status_code} url={url}"
-                    )
+                    last_error = OECDTransientError(f"OECD server error: status={response.status_code} url={url}")
                     logger.warning(
                         f"Server error {response.status_code} on attempt {attempt}/{self._retries} for {url}"
                     )

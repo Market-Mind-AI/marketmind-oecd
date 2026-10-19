@@ -40,8 +40,8 @@ services:
       - marketmind-network
     restart: unless-stopped
 
-# pgAdmin foi consolidado no marketmind-core (aponta para os bancos de todos
-# os serviços a partir de um único lugar). Ver marketmind-core/README.md.
+# pgAdmin foi consolidado no marketmind-scoring (aponta para os bancos de todos
+# os serviços a partir de um único lugar). Ver marketmind-scoring/README.md.
 
 volumes:
   postgres_data:
