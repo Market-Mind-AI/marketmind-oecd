@@ -42,7 +42,38 @@ env:
   VALUES_FILE: env/marketmind-dev/oecd-values.yaml
 
 jobs:
+  test:
+    # Runs before the image is built, so a red suite never ships. The suite
+    # mocks the database session and the upstream HTTP calls (tests/conftest.py)
+    # and every setting in app/core/config.py has a default, so the job needs
+    # no services and no env. Plain x86 is fine here: nothing in the tests is
+    # architecture-specific, and the build job below still produces arm64.
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Poetry
+        # Same pin as the Dockerfile, so the resolver that runs the tests is
+        # the one that builds the image.
+        run: pip install poetry==1.8.4
+
+      - name: Install dependencies
+        # poetry.lock is gitignored, so Poetry resolves from pyproject.toml
+        # here exactly as the Dockerfile does.
+        run: poetry install --no-interaction --no-root
+
+      - name: Run tests
+        run: poetry run pytest -q
+
   build-and-push:
+    needs: test
     # Native arm64, nothing emulated. Every node in the BeProfit AKS clusters is
     # Ampere arm64 (Standard_D4pls_v5 / D2ps_v5), so an amd64 image never
     # schedules — it fails as an unsatisfiable node constraint at rollout, long
