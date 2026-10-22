@@ -4,10 +4,18 @@ from datetime import datetime
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.models.ingestion_run import IngestionRun
 from app.db.models.oecd_observation import OECDObservation
 from app.db.models.oecd_request import OECDRequest
 
 Pair = tuple[str, str]
+
+# A check is a collection that FINISHED. A request whose run failed asked and
+# got nothing back -- the source was down -- and counting it as a check made a
+# 50-minute UN Data outage (22/10/2026) report twenty pairs as fresh for the
+# whole window, with their last real data a month old. A run still in flight is
+# not a check yet either.
+CHECKED_STATUSES = ("success", "partial")
 
 
 @dataclass(frozen=True)
@@ -35,6 +43,8 @@ class FreshnessRepository:
     ) -> dict[Pair, datetime]:
         stmt = (
             select(OECDRequest.country, OECDRequest.indicator_code, func.max(OECDRequest.created_at))
+            .join(IngestionRun, IngestionRun.id == OECDRequest.ingestion_run_id)
+            .where(IngestionRun.status.in_(CHECKED_STATUSES))
             .where(OECDRequest.country.is_not(None))
             .where(OECDRequest.indicator_code.is_not(None))
             .group_by(OECDRequest.country, OECDRequest.indicator_code)
