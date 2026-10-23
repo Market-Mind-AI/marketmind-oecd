@@ -328,3 +328,10 @@ Migration `002_create_readonly_role` creates a `marketmind_readonly` Postgres ro
 legacy: it dates from when `marketmind-scoring` read this database directly. Collectors are
 now read over HTTP, so nothing uses the role; the migration is kept only so existing
 databases keep a linear revision history (technical debt).
+
+## Team
+
+Final project (TFM) for the *Máster en Ingeniería y Desarrollo de Soluciones de IA Generativa* — **EBIS Business Techschool**. The whole system and how to run it: [marketmind-ai](https://github.com/Market-Mind-AI/marketmind-ai).
+
+- **Miguel Antonio Blanco Salcedo** — [@mikews93](https://github.com/mikews93)
+- **Álvaro Augusto De Marco Neto** — [@ironeto](https://github.com/ironeto)
