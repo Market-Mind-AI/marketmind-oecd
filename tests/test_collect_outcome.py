@@ -35,7 +35,9 @@ def _service(mock_session: AsyncMock, *outcomes: object, codes: tuple[str, ...] 
     service._ingestion_repo = MagicMock(create=AsyncMock(return_value=SimpleNamespace(id=uuid.uuid4())))
     service._ingestion_repo.mark_success = AsyncMock()
     service._ingestion_repo.mark_failed = AsyncMock()
-    service._oecd_request_repo = MagicMock(create=AsyncMock(side_effect=lambda **kw: SimpleNamespace(id=uuid.uuid4(), **kw)))
+    service._oecd_request_repo = MagicMock(
+        create=AsyncMock(side_effect=lambda **kw: SimpleNamespace(id=uuid.uuid4(), **kw))
+    )
     service._raw_response_repo = MagicMock(create=AsyncMock())
     service._observation_repo = MagicMock(replace_periods=AsyncMock())
     service._client = MagicMock(get_observations=AsyncMock(side_effect=list(outcomes)))
