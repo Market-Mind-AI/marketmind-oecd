@@ -121,9 +121,9 @@ all 5 services' databases). See `marketmind-scoring/README.md`.
 | `DATABASE_PASSWORD` | marketmind_password | Database password |
 | `DATABASE_SSL_MODE` | disable | `disable`, `require` or `verify-full` (Azure needs at least `require`) |
 | `OECD_BASE_URL` | https://sdmx.oecd.org/public/rest/v1 | OECD SDMX base URL |
-| `DEFAULT_TIMEOUT` | 30 | HTTP timeout (seconds) |
-| `DEFAULT_RETRIES` | 5 | Attempts per request (`.env.example` sets 3) |
-| `DEFAULT_BACKOFF` | 2 | Linear backoff step in seconds (see below) |
+| `DEFAULT_TIMEOUT` | 60 | HTTP timeout (seconds), same in every collector |
+| `DEFAULT_RETRIES` | 5 | Attempts per call, same in every collector |
+| `DEFAULT_BACKOFF` | 2 | First wait (seconds); doubles per attempt, with jitter, capped at 60 s |
 | `LOG_LEVEL` | INFO | Log level |
 
 ## Endpoints
@@ -149,7 +149,7 @@ all 5 services' databases). See `marketmind-scoring/README.md`.
 | POST | `/indicators/collect` | Collect data for cataloged indicators |
 | GET | `/observations/series` | Read one stored series for one country (`country`, `measure` or `indicator_code`, optional `frequency`, `limit`) |
 | GET | `/freshness` | What is stored and when it was last checked (`country`, `indicator`, `stale_after_days`, `only_stale`) |
-| POST | `/maintenance/refresh-stale` | Collect again every country whose last check is older than `stale_after_days` (default 30); `limit`, `fail_if_incomplete` |
+| POST | `/maintenance/refresh-stale` | Collect again every country whose last check is older than `stale_after_days` (default 90); `limit`, `fail_if_incomplete`, `years_back` (default 10) |
 | GET | `/requests/{id}` | Get stored request with data |
 | GET | `/runs/{id}` | Get ingestion run status |
 
@@ -250,11 +250,11 @@ curl "http://localhost:8001/observations/series?country=ESP&measure=RHP&frequenc
 ### Check Freshness and Refresh What Is Stale
 
 ```bash
-curl "http://localhost:8001/freshness?country=ESP&stale_after_days=30&only_stale=true"
+curl "http://localhost:8001/freshness?country=ESP&stale_after_days=90&only_stale=true"
 
 curl -X POST http://localhost:8001/maintenance/refresh-stale \
   -H "Content-Type: application/json" \
-  -d '{"stale_after_days": 30, "fail_if_incomplete": true}'
+  -d '{"stale_after_days": 90, "fail_if_incomplete": true}'
 ```
 
 ## How to Discover OECD Dataflows
@@ -292,16 +292,27 @@ The OECD Data Explorer provides free programmatic access using the SDMX standard
 - Some datasets have complex dimension structures
 - Time period formats vary (2026, 2026-Q1, 2026-01)
 - Not all datasets support all query parameters
-- Rate limits apply; see the retry behaviour below
+- Rate limits apply; see the collection rules below
 
-### Retry and Backoff
+## Collection rules (the same in every MarketMind collector)
 
-- Each request gets `DEFAULT_RETRIES` attempts (5 in code, 3 in `.env.example`).
-- Timeouts, generic HTTP errors and 5xx responses are retried with **linear** backoff: the
-  wait before attempt `n` is `DEFAULT_BACKOFF * n` seconds (2 s, 4 s, 6 s, ...).
-- On 429 the client sleeps for the `Retry-After` header when present, otherwise the same
-  linear wait.
-- 404 and other 4xx fail immediately; they are not retried.
+- **Retries** (`app/utils/retry.py`): 408, 429, any 5xx, timeouts and network errors are retried, up to
+  `DEFAULT_RETRIES` attempts, waiting `DEFAULT_BACKOFF` seconds doubled per attempt, with jitter, capped at
+  60 s; a `Retry-After` header is honoured up to the same cap. Other 4xx are never retried.
+- **HTTP status**: `422` when the request names an indicator the catalog does not have, or one without a
+  `dataflow_id` (the only caller error); `503` when the source stayed down through every attempt; `502`
+  when the source answered with something unusable; `404` when it has no data (direct endpoints only).
+- **A collection that got nothing raises**: if no requested indicator got an answer, `/indicators/collect`
+  answers `503` (every failure transient) or `502`, and the run is `failed` -- never a `200` with a failed run.
+- **What counts as a check**: one `oecd_requests` row per (country, indicator) that got an answer from the
+  source -- data, or a definitive "no data" (a 404). Failed indicators are not checks. Run statuses are
+  `running`, `success` and `failed`; there is no `partial`.
+- **One value per period**: a new collection replaces the periods it brings, and `/observations/series`
+  returns one row per period -- the latest collection's; within one collection, the largest value.
+- **Timestamps**: timezone-aware UTC everywhere (`app/utils/time.py`).
+- **Refresh**: each stale country is replayed with every indicator from all of its successful runs, over
+  the Core's window (`years_back` = 10: from ten years ago to this year); it counts as refreshed only when
+  every indicator got an answer.
 
 ### Rate Limit Best Practices
 
@@ -315,7 +326,7 @@ The OECD Data Explorer provides free programmatic access using the SDMX standard
 PostgreSQL 16 with 7 tables:
 
 - `ingestion_runs` — tracks each ingestion job
-- `oecd_requests` — tracks each API call
+- `oecd_requests` — tracks each API call; one row per (country, indicator) the source answered is a check
 - `raw_api_responses` — stores raw SDMX JSON (JSONB)
 - `oecd_dataflows` — discovered dataflows
 - `oecd_datastructures` — dataset dimensions and codes

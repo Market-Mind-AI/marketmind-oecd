@@ -1,4 +1,5 @@
 from datetime import timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from app.schemas.requests import RefreshStaleRequest
@@ -12,9 +13,13 @@ def _service(mock_session: AsyncMock, *, checks: dict | None = None, payloads: d
     service = OECDService(mock_session)
     service._freshness_repo.last_checks = AsyncMock(return_value=checks or {})
     service._freshness_repo.observation_facts = AsyncMock(return_value={})
-    service._ingestion_repo.last_successful_payload_by_country = AsyncMock(return_value=payloads or {})
-    service.collect_indicators = AsyncMock()
+    service._ingestion_repo.last_collect_setup_by_country = AsyncMock(return_value=payloads or {})
+    service.collect_indicators = AsyncMock(return_value=_collected())
     return service
+
+
+def _collected(failed: list[str] | None = None) -> SimpleNamespace:
+    return SimpleNamespace(data=SimpleNamespace(indicators_failed=failed or []))
 
 
 def _payload(country: str, indicators: list[str] | None = None) -> dict:
@@ -29,7 +34,7 @@ def _payload(country: str, indicators: list[str] | None = None) -> dict:
 async def test_a_stale_country_is_collected_again(mock_session: AsyncMock) -> None:
     service = _service(
         mock_session,
-        checks={("ESP", _RHP): utc_now() - timedelta(days=45)},
+        checks={("ESP", _RHP): utc_now() - timedelta(days=91)},
         payloads={"ESP": _payload("ESP")},
     )
 
@@ -55,7 +60,7 @@ async def test_a_fresh_country_is_left_alone(mock_session: AsyncMock) -> None:
 async def test_the_window_moves_to_now(mock_session: AsyncMock) -> None:
     service = _service(
         mock_session,
-        checks={("ESP", _RHP): utc_now() - timedelta(days=45)},
+        checks={("ESP", _RHP): utc_now() - timedelta(days=91)},
         payloads={"ESP": _payload("ESP")},
     )
 
@@ -63,13 +68,44 @@ async def test_the_window_moves_to_now(mock_session: AsyncMock) -> None:
 
     sent = service.collect_indicators.await_args.args[0]
     assert sent.end_period == str(utc_now().year)
-    assert sent.start_period == str(utc_now().year - 4)
+    assert sent.start_period == str(utc_now().year - 5)
+
+
+async def test_the_default_window_is_the_one_the_core_asks_for(mock_session: AsyncMock) -> None:
+    """O Core coleta de dez anos atrás até este ano; a renovação noturna pede o
+    mesmo, para não guardar uma série mais curta que a da primeira coleta."""
+    service = _service(
+        mock_session,
+        checks={("ESP", _RHP): utc_now() - timedelta(days=91)},
+        payloads={"ESP": _payload("ESP")},
+    )
+
+    await service.refresh_stale(RefreshStaleRequest())
+
+    sent = service.collect_indicators.await_args.args[0]
+    assert (sent.start_period, sent.end_period) == (str(utc_now().year - 10), str(utc_now().year))
+
+
+async def test_a_country_with_an_indicator_left_behind_counts_as_failed(mock_session: AsyncMock) -> None:
+    """Renovado só quando todo indicador teve resposta. Uma queda parcial da
+    fonte passava como noite boa, e `fail_if_incomplete` nunca a acusava."""
+    service = _service(
+        mock_session,
+        checks={("ESP", _RHP): utc_now() - timedelta(days=91)},
+        payloads={"ESP": _payload("ESP", [_RHP, "CPI"])},
+    )
+    service.collect_indicators = AsyncMock(return_value=_collected(["CPI"]))
+
+    response = await service.refresh_stale(RefreshStaleRequest())
+
+    assert (response.data.refreshed, response.data.failed) == (0, 1)
+    assert "CPI" in response.data.countries[0].detail
 
 
 async def test_the_indicators_come_from_the_stored_request(mock_session: AsyncMock) -> None:
     service = _service(
         mock_session,
-        checks={("ESP", _RHP): utc_now() - timedelta(days=45)},
+        checks={("ESP", _RHP): utc_now() - timedelta(days=91)},
         payloads={"ESP": _payload("ESP", ["CPI", "CCI"])},
     )
 
@@ -79,7 +115,7 @@ async def test_the_indicators_come_from_the_stored_request(mock_session: AsyncMo
 
 
 async def test_a_country_never_collected_is_skipped_not_invented(mock_session: AsyncMock) -> None:
-    service = _service(mock_session, checks={("PER", _RHP): utc_now() - timedelta(days=45)}, payloads={})
+    service = _service(mock_session, checks={("PER", _RHP): utc_now() - timedelta(days=91)}, payloads={})
 
     response = await service.refresh_stale(RefreshStaleRequest())
 
@@ -92,7 +128,7 @@ async def test_a_stored_request_without_indicators_is_skipped(mock_session: Asyn
     would fail validation rather than collect nothing."""
     service = _service(
         mock_session,
-        checks={("ESP", _RHP): utc_now() - timedelta(days=45)},
+        checks={("ESP", _RHP): utc_now() - timedelta(days=91)},
         payloads={"ESP": _payload("ESP", [])},
     )
 
@@ -103,7 +139,7 @@ async def test_a_stored_request_without_indicators_is_skipped(mock_session: Asyn
 
 
 async def test_the_pass_is_bounded(mock_session: AsyncMock) -> None:
-    old = utc_now() - timedelta(days=45)
+    old = utc_now() - timedelta(days=91)
     countries = ["ESP", "BRA", "USA", "DEU", "JPN"]
     service = _service(
         mock_session,
@@ -118,13 +154,13 @@ async def test_the_pass_is_bounded(mock_session: AsyncMock) -> None:
 
 
 async def test_one_country_failing_does_not_end_the_pass(mock_session: AsyncMock) -> None:
-    old = utc_now() - timedelta(days=45)
+    old = utc_now() - timedelta(days=91)
     service = _service(
         mock_session,
         checks={("ESP", _RHP): old, ("BRA", _RHP): old},
         payloads={"ESP": _payload("ESP"), "BRA": _payload("BRA")},
     )
-    service.collect_indicators = AsyncMock(side_effect=[RuntimeError("upstream down"), None])
+    service.collect_indicators = AsyncMock(side_effect=[RuntimeError("upstream down"), _collected()])
 
     response = await service.refresh_stale(RefreshStaleRequest())
 
@@ -170,3 +206,20 @@ def test_a_complete_pass_never_refuses() -> None:
 
     completa = SimpleNamespace(data=SimpleNamespace(failed=0))
     _refuse_if_incomplete(completa, RefreshStaleRequest(fail_if_incomplete=True))
+
+
+async def test_the_replay_gathers_every_indicator_from_every_run(mock_session: AsyncMock) -> None:
+    """O Core pede um indicador por coleta. Replicar só o pedido mais recente
+    renovava um indicador por país por noite; os outros ficavam vencidos."""
+    from app.repositories.ingestion_run_repository import IngestionRunRepository
+
+    linhas = [
+        ("ESP", {"country": "ESP", "indicator_codes": [_RHP]}),
+        ("ESP", {"country": "ESP", "indicator_codes": ["CPI"]}),
+        ("ESP", {"country": "ESP", "indicator_codes": [_RHP]}),
+    ]
+    mock_session.execute = AsyncMock(return_value=SimpleNamespace(all=lambda: linhas))
+
+    setups = await IngestionRunRepository(mock_session).last_collect_setup_by_country()
+
+    assert setups["ESP"]["indicator_codes"] == [_RHP, "CPI"]

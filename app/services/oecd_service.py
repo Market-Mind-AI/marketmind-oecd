@@ -4,7 +4,13 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.clients.oecd_client import OECDClient
-from app.core.exceptions import IndicatorNotConfiguredError
+from app.core.config import settings
+from app.core.exceptions import (
+    IndicatorNotConfiguredError,
+    OECDClientError,
+    OECDEmptyResponseError,
+    OECDTransientError,
+)
 from app.core.logging import logger
 from app.domain.enums import IngestionStatus, OECDEndpoint
 from app.repositories.freshness_repository import FreshnessRepository
@@ -52,7 +58,7 @@ from app.schemas.responses import (
 )
 from app.utils.normalization import normalize_observations
 from app.utils.sdmx import extract_dataflows, extract_dimensions, extract_observations
-from app.utils.time import as_naive_utc, elapsed_ms, utc_now
+from app.utils.time import elapsed_ms, utc_now
 
 # Known SDMX series-dimension order per dataflow (REF_AREA/MEASURE positions +
 # total dimension count), used to build a scoped query_key for
@@ -311,7 +317,7 @@ class OECDService:
                 dataset_id=request.dataset_id,
             )
             normalized = normalize_observations(raw_obs)
-            await self._observation_repo.bulk_create(oecd_request_id=oecd_req.id, records=normalized)
+            await self._observation_repo.replace_periods(oecd_request_id=oecd_req.id, records=normalized)
 
             exec_time = elapsed_ms(start)
             await self._ingestion_repo.mark_success(run, exec_time)
@@ -402,62 +408,98 @@ class OECDService:
             total=len(entities),
         )
 
-    async def collect_indicators(self, request: IndicatorCollectRequest) -> IndicatorCollectResponse:
-        endpoint = OECDEndpoint.INDICATORS_COLLECT
-        start = utc_now()
-        run = await self._ingestion_repo.create(source="oecd", request_payload=request.model_dump())
+    async def _configured_indicators(self, codes: list[str]) -> dict[str, Any]:
+        """Os indicadores do catálogo que este pedido nomeia -- ou recusa o pedido.
 
-        catalog = await self._indicator_repo.get_by_codes(request.indicator_codes)
-        catalog_map = {c.indicator_code: c for c in catalog}
+        Um código que o catálogo não conhece, ou que não tem dataflow para ser
+        coletado, é erro de quem pediu, e recusar o pedido inteiro com 422 é a
+        mesma regra nos três coletores de indicadores. Até 26/10/2026 era 400
+        aqui, 422 no UN Data e 404 no World Bank. A recusa vem antes de abrir a
+        execução: não houve coleta, e não há o que registrar.
+        """
+        catalog = {c.indicator_code: c for c in await self._indicator_repo.get_by_codes(codes)}
 
-        missing = [code for code in request.indicator_codes if code not in catalog_map]
+        missing = [code for code in codes if code not in catalog]
         if missing:
-            exec_time = elapsed_ms(start)
-            await self._ingestion_repo.mark_failed(
-                run,
-                f"Indicators not configured in catalog: {', '.join(missing)}. "
-                "Use POST /indicators/catalog to configure them with dataflow_id first.",
-                exec_time,
-            )
-            await self._session.commit()
             raise IndicatorNotConfiguredError(
                 f"Indicators not configured in catalog: {', '.join(missing)}. "
                 "Use POST /indicators/catalog to configure them with dataflow_id first."
             )
-
-        not_configured = [code for code, ind in catalog_map.items() if not ind.dataflow_id]
+        not_configured = [code for code in codes if not catalog[code].dataflow_id]
         if not_configured:
-            exec_time = elapsed_ms(start)
-            await self._ingestion_repo.mark_failed(
-                run,
-                f"Indicators missing dataflow_id: {', '.join(not_configured)}. Update the catalog with dataflow_id.",
-                exec_time,
-            )
-            await self._session.commit()
             raise IndicatorNotConfiguredError(
                 f"Indicators missing dataflow_id in catalog: {', '.join(not_configured)}. "
                 "Update the catalog with dataflow_id."
             )
+        return catalog
 
-        all_observations: list[dict[str, Any]] = []
-        collected: list[str] = []
-        failed: list[str] = []
+    @staticmethod
+    def _collect_failure(failures: dict[str, Exception]) -> Exception:
+        """O erro de uma coleta em que NENHUM indicador teve resposta da fonte.
 
-        for code in request.indicator_codes:
-            indicator = catalog_map[code]
-            try:
+        Uma coleta que não trouxe nada levanta erro -- nunca um 200 com a
+        execução marcada como falha por dentro. Era assim até 26/10/2026, e a
+        manutenção diária contava uma queda da fonte como país renovado, com o
+        CronJob verde. A regra é a mesma nos três coletores de indicadores:
+
+        - toda falha foi passageira (5xx, 429, timeout, rede): a fonte está
+          fora, e o erro é 503 -- "tente de novo", que é o que vale fazer;
+        - alguma falha foi uma resposta definitiva que não serve: 502.
+
+        4xx fica só para erro de quem pediu, que é recusado antes de coletar
+        (`_configured_indicators`).
+        """
+        detail = "; ".join(f"{code}: {error}" for code, error in failures.items())
+        if all(isinstance(error, OECDTransientError) for error in failures.values()):
+            return OECDTransientError(f"OECD unavailable: {detail}")
+        return OECDClientError(f"No indicator could be collected: {detail}")
+
+    async def collect_indicators(self, request: IndicatorCollectRequest) -> IndicatorCollectResponse:
+        endpoint = OECDEndpoint.INDICATORS_COLLECT
+        catalog_map = await self._configured_indicators(request.indicator_codes)
+        start = utc_now()
+        run = await self._ingestion_repo.create(source="oecd", request_payload=request.model_dump())
+
+        try:
+            all_observations: list[dict[str, Any]] = []
+            collected: list[str] = []
+            failures: dict[str, Exception] = {}
+
+            for code in request.indicator_codes:
+                indicator = catalog_map[code]
                 query_params: dict[str, str] = {}
                 if request.start_period:
                     query_params["startPeriod"] = request.start_period
                 if request.end_period:
                     query_params["endPeriod"] = request.end_period
-
                 query_key = _build_series_key(indicator.dataflow_id, request.country, code)  # type: ignore[arg-type]
-                data, url = await self._client.get_observations(
-                    dataflow_id=indicator.dataflow_id,  # type: ignore[arg-type]
-                    query_key=query_key,
-                    query_params=query_params if query_params else None,
-                )
+                url = f"{settings.oecd_base_url.rstrip('/')}/data/{indicator.dataflow_id}/{query_key or 'all'}"
+
+                try:
+                    data, url = await self._client.get_observations(
+                        dataflow_id=indicator.dataflow_id,  # type: ignore[arg-type]
+                        query_key=query_key,
+                        query_params=query_params if query_params else None,
+                    )
+                    raw_obs = extract_observations(
+                        data,
+                        country=request.country,
+                        indicator_code=code,
+                        dataflow_id=indicator.dataflow_id,
+                        dataset_id=indicator.dataset_id,
+                    )
+                except OECDEmptyResponseError as e:
+                    # A fonte respondeu que não tem: é resposta, conta como
+                    # verificação, e não é falha.
+                    data, raw_obs = {"no_data": str(e)}, []
+                except Exception as e:
+                    logger.error(f"Failed to collect indicator {code}: {e}")
+                    failures[code] = e
+                    continue
+
+                # A verificação: uma linha por indicador que a fonte respondeu.
+                # Um código que falhou não ganha linha, e por isso não conta
+                # como verificado (ver FreshnessRepository.last_checks).
                 oecd_req = await self._oecd_request_repo.create(
                     ingestion_run_id=run.id,
                     endpoint=endpoint,
@@ -476,27 +518,20 @@ class OECDService:
                     request_payload={"indicator_code": code, "country": request.country},
                     response_payload=data,
                 )
-                raw_obs = extract_observations(
-                    data,
-                    country=request.country,
-                    indicator_code=code,
-                    dataflow_id=indicator.dataflow_id,
-                    dataset_id=indicator.dataset_id,
-                )
                 normalized = normalize_observations(raw_obs)
-                await self._observation_repo.bulk_create(oecd_request_id=oecd_req.id, records=normalized)
+                await self._observation_repo.replace_periods(oecd_request_id=oecd_req.id, records=normalized)
                 all_observations.extend(normalized)
                 collected.append(code)
-            except Exception as e:
-                logger.error(f"Failed to collect indicator {code}: {e}")
-                failed.append(code)
 
-        exec_time = elapsed_ms(start)
-        if failed and not collected:
-            await self._ingestion_repo.mark_failed(run, f"All indicators failed: {', '.join(failed)}", exec_time)
-        else:
+            if not collected:
+                raise self._collect_failure(failures)
+
+            exec_time = elapsed_ms(start)
             await self._ingestion_repo.mark_success(run, exec_time)
-        await self._session.commit()
+            await self._session.commit()
+        except Exception as e:
+            await self._fail(run, endpoint, start, e)
+            raise
 
         first_req_id = run.id
         self._log_success(
@@ -526,7 +561,7 @@ class OECDService:
                     for obs in all_observations
                 ],
                 indicators_collected=collected,
-                indicators_failed=failed,
+                indicators_failed=list(failures),
             ),
         )
 
@@ -648,7 +683,7 @@ class OECDService:
         *,
         countries: list[str] | None = None,
         indicators: list[str] | None = None,
-        stale_after_days: int = 30,
+        stale_after_days: int = 90,
         only_stale: bool = False,
     ) -> FreshnessResponse:
         """What this service holds and when it last looked, per country and indicator.
@@ -679,10 +714,7 @@ class OECDService:
 
         items: list[FreshnessItem] = []
         for country, indicator in pairs:
-            # Normalizado antes de comparar: `utc_now()` é sem fuso e esta
-            # coluna é `timestamp with time zone`, então a comparação crua é
-            # TypeError — ver as_naive_utc.
-            last_checked_at = as_naive_utc(checks.get((country, indicator)))
+            last_checked_at = checks.get((country, indicator))
             facts = observed.get((country, indicator))
             stale = last_checked_at is None or last_checked_at < cutoff
             if only_stale and not stale:
@@ -750,9 +782,15 @@ class OECDService:
         Bounded on purpose: a first run against a long-idle database finds every
         country stale at once, and the upstream API has its own patience.
 
-        Each country is REPLAYED from its last successful request with the
-        window moved to now, so whatever a caller once set up keeps working
-        without this service learning which indicators that country uses.
+        Each country is REPLAYED from what its successful collections asked
+        for -- every indicator, gathered across runs -- with the window moved to
+        now, so whatever a caller once set up keeps working without this service
+        learning which indicators that country uses.
+
+        Um país só conta como renovado quando TODOS os seus indicadores tiveram
+        resposta. Se algum falhou, o país conta como falha, com os códigos no
+        detalhe -- é o que faz `fail_if_incomplete` acusar uma queda parcial da
+        fonte em vez de deixá-la passar como noite boa. Mesma regra nos três.
         """
         freshness = await self.get_freshness(stale_after_days=request.stale_after_days, only_stale=True)
 
@@ -761,17 +799,19 @@ class OECDService:
             if item.country not in stale_countries:
                 stale_countries.append(item.country)
 
-        payloads = await self._ingestion_repo.last_successful_payload_by_country()
+        setups = await self._ingestion_repo.last_collect_setup_by_country()
         end_year = utc_now().year
-        start_year = end_year - request.years_back + 1
+        # A mesma janela que o Core pede: de `years_back` anos atrás até este
+        # ano, inclusive (macro_coverage, `_ANNUAL_LOOKBACK_YEARS`).
+        start_year = end_year - request.years_back
 
         outcomes: list[RefreshedCountry] = []
         refreshed = failed = skipped = 0
 
         for country in stale_countries[: request.limit]:
-            payload = payloads.get(country)
-            indicator_codes = (payload or {}).get("indicator_codes")
-            if payload is None or not indicator_codes:
+            setup = setups.get(country)
+            indicator_codes = (setup or {}).get("indicator_codes")
+            if setup is None or not indicator_codes:
                 skipped += 1
                 outcomes.append(
                     RefreshedCountry(
@@ -783,20 +823,34 @@ class OECDService:
                 continue
 
             try:
-                await self.collect_indicators(
+                response = await self.collect_indicators(
                     IndicatorCollectRequest(
-                        country=payload.get("country", country),
+                        country=setup.get("country", country),
                         start_period=str(start_year),
                         end_period=str(end_year),
                         indicator_codes=indicator_codes,
                     )
                 )
-                refreshed += 1
-                outcomes.append(RefreshedCountry(country=country, outcome="refreshed"))
             except Exception as exc:  # noqa: BLE001 - one country failing must not end the pass
                 failed += 1
                 logger.warning(f"Scheduled refresh failed for country={country}: {exc}")
                 outcomes.append(RefreshedCountry(country=country, outcome="failed", detail=str(exc)))
+                continue
+
+            not_collected = response.data.indicators_failed
+            if not_collected:
+                failed += 1
+                logger.warning(f"Scheduled refresh incomplete for country={country}: {not_collected}")
+                outcomes.append(
+                    RefreshedCountry(
+                        country=country,
+                        outcome="failed",
+                        detail=f"indicators not collected: {', '.join(not_collected)}",
+                    )
+                )
+            else:
+                refreshed += 1
+                outcomes.append(RefreshedCountry(country=country, outcome="refreshed"))
 
         return RefreshStaleResponse(
             data=RefreshStaleData(

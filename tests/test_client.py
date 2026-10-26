@@ -85,12 +85,11 @@ class TestOECDClientGetDataflows:
                 await oecd_client.get_dataflows()
 
     @pytest.mark.asyncio
-    async def test_server_error(self, oecd_client: OECDClient) -> None:
+    async def test_client_error(self, oecd_client: OECDClient) -> None:
         oecd_client._retries = 1
-        oecd_client._backoff = 0
         mock_response = httpx.Response(
-            status_code=500,
-            text="Internal Server Error",
+            status_code=400,
+            text="Bad Request",
             request=httpx.Request("GET", "https://test.com"),
         )
         with patch("app.clients.oecd_client.httpx.AsyncClient") as mock_client_cls:
@@ -106,7 +105,6 @@ class TestOECDClientGetDataflows:
     @pytest.mark.asyncio
     async def test_server_error_raises_transient(self, oecd_client: OECDClient) -> None:
         oecd_client._retries = 1
-        oecd_client._backoff = 0
         mock_response = httpx.Response(
             status_code=503,
             text="Service Unavailable",
@@ -127,7 +125,6 @@ class TestOECDClientRetry:
     @pytest.mark.asyncio
     async def test_retry_on_timeout(self, oecd_client: OECDClient) -> None:
         oecd_client._retries = 2
-        oecd_client._backoff = 0
 
         mock_success = httpx.Response(
             status_code=200,
@@ -151,7 +148,6 @@ class TestOECDClientRetry:
     @pytest.mark.asyncio
     async def test_retry_on_server_error(self, oecd_client: OECDClient) -> None:
         oecd_client._retries = 2
-        oecd_client._backoff = 0
 
         mock_error = httpx.Response(
             status_code=503,

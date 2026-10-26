@@ -27,7 +27,7 @@ async def test_a_recent_check_is_not_stale(mock_session: AsyncMock) -> None:
 
 
 async def test_an_old_check_is_stale(mock_session: AsyncMock) -> None:
-    service = _service(mock_session, checks={("ESP", _CPI): utc_now() - timedelta(days=31)})
+    service = _service(mock_session, checks={("ESP", _CPI): utc_now() - timedelta(days=91)})
 
     response = await service.get_freshness(countries=["ESP"], indicators=[_CPI])
 
@@ -78,7 +78,7 @@ async def test_a_check_that_returned_nothing_still_counts_as_checked(mock_sessio
 async def test_only_stale_filters_out_what_is_fresh(mock_session: AsyncMock) -> None:
     service = _service(
         mock_session,
-        checks={("ESP", _CPI): utc_now() - timedelta(days=1), ("ESP", _RHP): utc_now() - timedelta(days=90)},
+        checks={("ESP", _CPI): utc_now() - timedelta(days=1), ("ESP", _RHP): utc_now() - timedelta(days=91)},
     )
 
     response = await service.get_freshness(countries=["ESP"], indicators=[_CPI, _RHP], only_stale=True)
@@ -132,9 +132,21 @@ async def test_an_old_check_with_a_timezone_is_stale(mock_session: AsyncMock) ->
     """The other direction: normalising must not make everything look fresh."""
     from datetime import UTC
 
-    aware_old = (utc_now() - timedelta(days=31)).replace(tzinfo=UTC)
+    aware_old = (utc_now() - timedelta(days=91)).replace(tzinfo=UTC)
     service = _service(mock_session, checks={("ESP", _CPI): aware_old})
 
     response = await service.get_freshness(countries=["ESP"], indicators=[_CPI])
 
     assert [(i.country, i.stale) for i in response.data.items] == [("ESP", True)]
+
+
+async def test_the_default_window_is_the_cores_ninety_days(mock_session: AsyncMock) -> None:
+    """Indicador de país sai uma vez por ano; o Core o considera bom por 90 dias
+    (`country_indicator_ttl_days`). Com o padrão antigo de 30, quem não passava
+    a janela renovava todo mês um número que não tinha mudado."""
+    service = _service(mock_session, checks={("ESP", _CPI): utc_now() - timedelta(days=60)})
+
+    response = await service.get_freshness(countries=["ESP"], indicators=[_CPI])
+
+    assert response.data.stale_after_days == 90
+    assert response.data.items[0].stale is False

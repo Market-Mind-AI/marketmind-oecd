@@ -8,8 +8,7 @@ from app.core.exceptions import (
     OECDClientError,
     OECDEmptyResponseError,
     OECDParsingError,
-    OECDRateLimitError,
-    OECDTimeoutError,
+    OECDTransientError,
 )
 from app.schemas.requests import (
     DataflowsRequest,
@@ -59,10 +58,33 @@ def _refuse_if_incomplete(resposta, pedido) -> None:
         )
 
 
+def _handle_exception(e: Exception) -> HTTPException:
+    """O status HTTP de cada erro, num lugar só, e o mesmo nos três coletores:
+
+    - 422: indicador que o catálogo não conhece -- o único erro de quem pediu;
+    - 503: fonte fora do ar depois de todas as tentativas -- vale insistir;
+    - 404: a fonte não tem o dado pedido;
+    - 502: a fonte respondeu algo que não serve.
+
+    Timeout e 429 esgotados são 503, como qualquer outra queda passageira. Até
+    26/10/2026 uma queda saía 502 aqui, porque a exceção passageira herdava da
+    de cliente e caía no mesmo ramo.
+    """
+    if isinstance(e, IndicatorNotConfiguredError):
+        return HTTPException(status_code=422, detail=str(e))
+    if isinstance(e, OECDTransientError):
+        return HTTPException(status_code=503, detail=str(e))
+    if isinstance(e, OECDEmptyResponseError):
+        return HTTPException(status_code=404, detail=str(e))
+    if isinstance(e, (OECDClientError, OECDParsingError)):
+        return HTTPException(status_code=502, detail=str(e))
+    return HTTPException(status_code=500, detail=str(e))
+
+
 @router.post(
     "/dataflows",
     response_model=DataflowsResponse,
-    responses={502: {"model": ErrorResponse}, 504: {"model": ErrorResponse}},
+    responses={502: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
     summary="Discover OECD Dataflows",
     description="Fetches available OECD dataflows/datasets, normalizes and persists them.",
 )
@@ -72,22 +94,14 @@ async def dataflows(
 ) -> DataflowsResponse:
     try:
         return await service.collect_dataflows(request)
-    except OECDEmptyResponseError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except OECDRateLimitError as e:
-        raise HTTPException(status_code=429, detail=str(e))
-    except OECDTimeoutError as e:
-        raise HTTPException(status_code=504, detail=str(e))
-    except OECDParsingError as e:
-        raise HTTPException(status_code=502, detail=str(e))
-    except OECDClientError as e:
-        raise HTTPException(status_code=502, detail=str(e))
+    except Exception as e:
+        raise _handle_exception(e) from e
 
 
 @router.post(
     "/datastructure",
     response_model=DatastructureResponse,
-    responses={502: {"model": ErrorResponse}, 504: {"model": ErrorResponse}},
+    responses={502: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
     summary="Get Dataflow Structure",
     description="Fetches the structure (dimensions, codelists) of an OECD dataflow, normalizes and persists it.",
 )
@@ -97,22 +111,14 @@ async def datastructure(
 ) -> DatastructureResponse:
     try:
         return await service.collect_datastructure(request)
-    except OECDEmptyResponseError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except OECDRateLimitError as e:
-        raise HTTPException(status_code=429, detail=str(e))
-    except OECDTimeoutError as e:
-        raise HTTPException(status_code=504, detail=str(e))
-    except OECDParsingError as e:
-        raise HTTPException(status_code=502, detail=str(e))
-    except OECDClientError as e:
-        raise HTTPException(status_code=502, detail=str(e))
+    except Exception as e:
+        raise _handle_exception(e) from e
 
 
 @router.post(
     "/observations",
     response_model=ObservationsResponse,
-    responses={502: {"model": ErrorResponse}, 504: {"model": ErrorResponse}},
+    responses={502: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
     summary="Collect OECD Observations",
     description="Fetches observations from an OECD dataflow, normalizes and persists them.",
 )
@@ -122,16 +128,8 @@ async def observations(
 ) -> ObservationsResponse:
     try:
         return await service.collect_observations(request)
-    except OECDEmptyResponseError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except OECDRateLimitError as e:
-        raise HTTPException(status_code=429, detail=str(e))
-    except OECDTimeoutError as e:
-        raise HTTPException(status_code=504, detail=str(e))
-    except OECDParsingError as e:
-        raise HTTPException(status_code=502, detail=str(e))
-    except OECDClientError as e:
-        raise HTTPException(status_code=502, detail=str(e))
+    except Exception as e:
+        raise _handle_exception(e) from e
 
 
 @router.post(
@@ -155,9 +153,12 @@ async def upsert_indicators(
         "The scheduled half of keeping data current. The other half is the "
         "on-demand collection: something decides a country is needed now and "
         "asks for it.\n\n"
-        "Each stale country is replayed from its last SUCCESSFUL collection "
-        "request, with the period window moved to now, so whatever a caller "
-        "once set up keeps working without this service learning about it.\n\n"
+        "Each stale country is replayed from its SUCCESSFUL collection requests "
+        "-- every indicator it was ever collected with, gathered across runs -- "
+        "with the period window moved to now (`years_back`, default 10, the "
+        "window the Core asks for), so whatever a caller once set up keeps "
+        "working without this service learning about it. A country counts as "
+        "refreshed only when every one of its indicators got an answer.\n\n"
         "A country never collected is skipped, not invented: it has no request "
         "to replay, and it arrives through the on-demand path the first time.\n\n"
         "Bounded by `limit`. One country failing does not end the pass."
@@ -180,12 +181,13 @@ async def refresh_stale(
     description=(
         "Returns the stored values for a country and measure, one value per "
         "time period, newest first, nulls dropped.\n\n"
-        "Deduplicated per period, and that matters: re-collection inserts "
-        "without replacing, so a period is held many times over. Reading the "
-        "raw table with a plain limit returns many copies of the same period, "
-        "which makes any window counted in periods collapse -- it produced a "
-        "growth rate of exactly zero for every country once, and looked "
-        "entirely plausible.\n\n"
+        "One value per period, and that matters: reading the raw table with a "
+        "plain limit once returned many copies of the same period, which made "
+        "any window counted in periods collapse -- it produced a growth rate of "
+        "exactly zero for every country, and looked entirely plausible. A new "
+        "collection replaces the periods it brings; when a period still has "
+        "more than one row, the latest collection wins, and within one "
+        "collection the largest value -- the same rule in every collector.\n\n"
         "Pass `frequency` whenever a measure is published at more than one "
         "frequency (quarterly and annually share a code), or the window mixes "
         "them.\n\n"
@@ -227,7 +229,7 @@ async def get_series(
 async def get_freshness(
     country: list[str] | None = Query(None, description="Country codes. Repeat the parameter for several."),
     indicator: list[str] | None = Query(None, description="Indicator codes. Repeat for several."),
-    stale_after_days: int = Query(30, ge=1, le=3650, description="A check older than this counts as stale."),
+    stale_after_days: int = Query(90, ge=1, le=3650, description="A check older than this counts as stale."),
     only_stale: bool = Query(False, description="Return only the pairs that need collecting."),
     service: OECDService = Depends(get_oecd_service),
 ) -> FreshnessResponse:
@@ -267,9 +269,9 @@ async def seed_catalog(
     "/indicators/collect",
     response_model=IndicatorCollectResponse,
     responses={
-        400: {"model": ErrorResponse},
+        422: {"model": ErrorResponse},
         502: {"model": ErrorResponse},
-        504: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
     },
     summary="Collect Indicators from Catalog",
     description=(
@@ -283,16 +285,8 @@ async def collect_indicators(
 ) -> IndicatorCollectResponse:
     try:
         return await service.collect_indicators(request)
-    except IndicatorNotConfiguredError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except OECDEmptyResponseError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except OECDRateLimitError as e:
-        raise HTTPException(status_code=429, detail=str(e))
-    except OECDTimeoutError as e:
-        raise HTTPException(status_code=504, detail=str(e))
-    except OECDClientError as e:
-        raise HTTPException(status_code=502, detail=str(e))
+    except Exception as e:
+        raise _handle_exception(e) from e
 
 
 @router.get(

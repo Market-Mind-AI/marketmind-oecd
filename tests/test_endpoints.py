@@ -72,7 +72,8 @@ class TestDataflowsEndpoint:
             response = client.post("/dataflows", json={"agency_id": "OECD"})
         app.dependency_overrides.clear()
 
-        assert response.status_code == 504
+        # Timeout esgotado é fonte fora do ar: 503 em todos os coletores.
+        assert response.status_code == 503
 
     def test_dataflows_empty(self) -> None:
         mock_service = _create_mock_service()

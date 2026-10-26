@@ -19,6 +19,15 @@ def event_loop():
     loop.close()
 
 
+@pytest.fixture(autouse=True)
+def _no_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A espera entre tentativas é real (app/utils/retry.py); nos testes ela
+    seria só tempo perdido. A contagem de tentativas continua valendo."""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "default_backoff", 0)
+
+
 @pytest.fixture
 def mock_session() -> AsyncMock:
     session = AsyncMock(spec=AsyncSession)

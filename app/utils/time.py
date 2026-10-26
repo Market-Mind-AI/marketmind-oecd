@@ -2,25 +2,17 @@ from datetime import UTC, datetime
 
 
 def utc_now() -> datetime:
-    return datetime.now(UTC).replace(tzinfo=None)
+    """Agora, em UTC e COM fuso -- a única convenção de instante deste serviço.
 
-
-def as_naive_utc(moment: datetime | None) -> datetime | None:
-    """Um instante comparável com `utc_now()`.
-
-    Este serviço trata datetime sem fuso como UTC — é o que `utc_now()` devolve.
-    Mas nem toda coluna guarda assim: `oecd_requests.created_at` é
-    `timestamp with time zone` e volta COM fuso, e comparar um com o outro é
-    `TypeError: can't compare offset-naive and offset-aware datetimes`.
-
-    Derrubou o `/freshness` inteiro — que por sua vez derrubou o CronJob diário
-    deste serviço e o pré-aquecimento macro do serviço de scoring, que passou a
-    perguntar o frescor a quem é dono do dado. Nenhum dos dois falhava de forma
-    visível: os dois só apareciam como um pod em `Error` na listagem.
+    As colunas de data são todas `timestamp with time zone`, e voltam do banco
+    com fuso. Enquanto este relógio devolvia o instante sem fuso, comparar um
+    com o outro era `TypeError: can't compare offset-naive and offset-aware
+    datetimes` -- derrubou o /freshness da OCDE e o do World Bank, um de cada
+    vez -- e cada serviço remendava com uma conversão própria no ponto da
+    comparação. Com o fuso desde a origem, não há o que converter. É a mesma
+    convenção nos quatro coletores.
     """
-    if moment is None:
-        return None
-    return moment.astimezone(UTC).replace(tzinfo=None) if moment.tzinfo is not None else moment
+    return datetime.now(UTC)
 
 
 def elapsed_ms(start: datetime) -> int:

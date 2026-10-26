@@ -15,7 +15,14 @@ Pair = tuple[str, str]
 # 50-minute UN Data outage (22/10/2026) report twenty pairs as fresh for the
 # whole window, with their last real data a month old. A run still in flight is
 # not a check yet either.
-CHECKED_STATUSES = ("success", "partial")
+#
+# Só "success". Existia também "partial", que nenhum coletor jamais gravou e que
+# o Core lê como FALHA -- o mesmo nome com dois sentidos. Saiu dos três.
+#
+# E a linha de requisição só existe para o indicador que a fonte RESPONDEU --
+# com dado ou com um "não tenho" definitivo (ver OECDService.collect_indicators).
+# Um indicador que falhou não ganha linha, e por isso não conta como verificado.
+CHECKED_STATUSES = ("success",)
 
 
 @dataclass(frozen=True)

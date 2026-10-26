@@ -24,8 +24,9 @@ async def test_a_failed_collection_is_not_a_check() -> None:
     sql = await _sql_of_last_checks()
 
     assert "JOIN ingestion_runs" in sql
-    assert "ingestion_runs.status IN ('success', 'partial')" in sql
+    assert "ingestion_runs.status IN ('success')" in sql
 
 
 def test_only_finished_statuses_count() -> None:
-    assert CHECKED_STATUSES == ("success", "partial")
+    """"partial" saiu: nenhum coletor o gravava, e o Core o lê como falha."""
+    assert CHECKED_STATUSES == ("success",)
